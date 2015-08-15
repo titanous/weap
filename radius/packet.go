@@ -29,6 +29,29 @@ type Attribute struct {
 	Data []byte
 }
 
+func (p *Packet) Encode(buf []byte) []byte {
+	length := uint16(20)
+	for _, attr := range p.Attributes {
+		length += 2 + uint16(len(attr.Data))
+	}
+
+	buf = append(buf, byte(p.Type))
+	buf = append(buf, p.Identifier)
+	buf = append(buf, byte(length>>8), byte(length))
+	if len(p.Authenticator) != 16 {
+		panic(fmt.Errorf("radius: expected authenticator to be 16 bytes, got %d", len(p.Authenticator)))
+	}
+	buf = append(buf, p.Authenticator...)
+
+	for _, attr := range p.Attributes {
+		buf = append(buf, byte(attr.Type))
+		buf = append(buf, byte(2+len(attr.Data)))
+		buf = append(buf, attr.Data...)
+	}
+
+	return buf
+}
+
 func DecodePacket(data []byte) (*Packet, error) {
 	if len(data) < 20 {
 		return nil, errors.New("radius: packet is too short")
@@ -63,10 +86,13 @@ func DecodePacket(data []byte) (*Packet, error) {
 		var attr Attribute
 		attr.Type = AttributeType(data[0])
 		attrLen := int(data[1])
+		if attrLen < 2 {
+			return nil, fmt.Errorf("radius: error reading attribute %d, length is too low: %d", len(p.Attributes), attrLen)
+		}
 		if len(data) < attrLen {
 			return nil, fmt.Errorf("radius: unexpected packet end reading attribute %d, type %d, attribute says %d got %d", len(p.Attributes), attr.Type, attrLen, len(data))
 		}
-		if attrLen > 0 {
+		if attrLen > 2 {
 			attr.Data = data[2:attrLen]
 		}
 		data = data[attrLen:]

@@ -1,14 +1,36 @@
 package radius
 
 import (
-	"encoding/hex"
+	"bytes"
+	"encoding/binary"
 	"testing"
-
-	"github.com/davecgh/go-spew/spew"
 )
 
-func TestDecodePacket(t *testing.T) {
-	data, _ := hex.DecodeString("016e014db3cc6d3470e446e7b90f401f62afb42201116a6f6e617468616e2d6970686f6e6504060a0a0a67200e3034313864363130356535380506000000001e1a30342d31382d44362d31422d43422d30313a416c70696e611f1330302d36312d37312d42462d37422d33450c06000005783d06000000134d17434f4e4e45435420304d627073203830322e3131624f9a029900980d800000008e160301008901000085030155ce6793b60f8a0539772c75fcffa8e9de21ce25ecb525d5953581266f8229d000004a00ffc024c023c00ac009c008c028c027c014c013c012c026c025c005c004c003c02ac029c00fc00ec00d006b0067003900330016003d003c0035002f000ac007c011c002c00c0005000401000012000a00080006001700180019000b00020100181266b1af626628a2572f8ee143e823a4a150123df85799f81dcf93fd5b81f171c5d6a7")
+func TestDecodePacketAttributesZeroLength(t *testing.T) {
+	_, err := DecodePacket([]byte("\x01=\x00<\x005\x00/\x00\n\xc0\a\xc0\x11\xc0\x02\xc0\f\x00\x05" +
+		"\x00\x04\x01\x00\x00\x12\x00\n\x00\b\x00\x06\x00\x17\x00\x18\x00\x19\x00\v" +
+		"\x00\x02\x01\x00\x18\x12f\xb1\xafbf(\xa2W/\x8e\xe1C\xe8#" +
+		"\xa4\xa1P\x12=\xf8W\x99\xf8\x1dϓ\xfd[\x81\xf1q\xc5֧"))
+	if err == nil {
+		t.Error("expected attribute decode error, got nil")
+	}
+}
+
+func TestDecodePacketZeroLengthAttributeData(t *testing.T) {
+	_, err := DecodePacket([]byte("\v0\x00)00000000000000000\x010000000000000000000"))
+	if err == nil {
+		t.Error("expected attribute decode error, got nil")
+	}
+}
+
+func TestDecodeEncodeRoundTrip(t *testing.T) {
+	data := []byte("\v0\x00\x1400000000000000000")
 	packet, err := DecodePacket(data)
-	spew.Dump(packet, err)
+	if err != nil {
+		t.Error(err)
+	}
+	encoded := packet.Encode(nil)
+	if !bytes.Equal(encoded, data[:int(binary.BigEndian.Uint16(data[2:]))]) {
+		panic("encode mismatch")
+	}
 }
