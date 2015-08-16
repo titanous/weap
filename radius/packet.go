@@ -1,6 +1,7 @@
 package radius
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ type AttributeType byte
 
 type Packet struct {
 	Type          PacketType
+	Length        uint16
 	Identifier    byte
 	Authenticator []byte // 16 bytes
 	Attributes    []Attribute
@@ -52,6 +54,12 @@ func (p *Packet) Encode(buf []byte) []byte {
 	return buf
 }
 
+func (p *Packet) Equal(other *Packet) bool {
+	return p.Identifier == other.Identifier && p.Length == other.Length && bytes.Equal(p.Authenticator, other.Authenticator)
+}
+
+const packetMaxLength = 4096
+
 func DecodePacket(data []byte) (*Packet, error) {
 	if len(data) < 20 {
 		return nil, errors.New("radius: packet is too short")
@@ -66,14 +74,14 @@ func DecodePacket(data []byte) (*Packet, error) {
 
 	p.Identifier = data[1]
 
-	length := int(binary.BigEndian.Uint16(data[2:]))
-	if length < 20 || length > 4096 {
-		return nil, fmt.Errorf("radius: invalid packet length %d", length)
+	p.Length = binary.BigEndian.Uint16(data[2:])
+	if p.Length < 20 || p.Length > packetMaxLength {
+		return nil, fmt.Errorf("radius: invalid packet length %d", p.Length)
 	}
-	if length > len(data) {
-		return nil, fmt.Errorf("radius: packet too short, packet says %d but got %d", length, len(data))
+	if int(p.Length) > len(data) {
+		return nil, fmt.Errorf("radius: packet too short, packet says %d but got %d", p.Length, len(data))
 	}
-	data = data[4:length]
+	data = data[4:int(p.Length)]
 
 	p.Authenticator = data[:16]
 	data = data[16:]
