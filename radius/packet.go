@@ -31,6 +31,8 @@ type Attribute struct {
 	Data []byte
 }
 
+var emptyAuthenticator = make([]byte, 16)
+
 func (p *Packet) Encode(buf []byte) []byte {
 	length := uint16(20)
 	for _, attr := range p.Attributes {
@@ -41,9 +43,10 @@ func (p *Packet) Encode(buf []byte) []byte {
 	buf = append(buf, p.Identifier)
 	buf = append(buf, byte(length>>8), byte(length))
 	if len(p.Authenticator) != 16 {
-		panic(fmt.Errorf("radius: expected authenticator to be 16 bytes, got %d", len(p.Authenticator)))
+		buf = append(buf, emptyAuthenticator...)
+	} else {
+		buf = append(buf, p.Authenticator...)
 	}
-	buf = append(buf, p.Authenticator...)
 
 	for _, attr := range p.Attributes {
 		buf = append(buf, byte(attr.Type))
