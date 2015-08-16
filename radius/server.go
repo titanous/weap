@@ -2,6 +2,7 @@ package radius
 
 import (
 	"crypto/md5"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -20,6 +21,12 @@ type PacketConn interface {
 
 type Handler interface {
 	ServeRADIUS(ResponseWriter, *Request)
+}
+
+type HandlerFunc func(ResponseWriter, *Request)
+
+func (f HandlerFunc) ServeRADIUS(w ResponseWriter, r *Request) {
+	f(w, r)
 }
 
 type ResponseWriter interface {
@@ -41,7 +48,7 @@ var bufPool = &sync.Pool{
 	New: func() interface{} { return make([]byte, packetMaxLength) },
 }
 
-func Serve(c PacketConn, h Handler, secret []byte) error {
+func Serve(c PacketConn, secret []byte, h Handler) error {
 	server := newServer(c, h, secret)
 	for {
 		raw := bufPool.Get().([]byte)
@@ -52,11 +59,11 @@ func Serve(c PacketConn, h Handler, secret []byte) error {
 		}
 		packet, err := DecodePacket(raw[:n])
 		if err != nil {
-			// TODO: log
+			log.Printf("radius: error decoding packet from %s: %s", addr, err)
 			continue
 		}
 		if packet.Type != TypeAccessRequest {
-			// TODO: log
+			log.Printf("radius: got invalid packet type from %s: %s", addr, packet.Type)
 			continue
 		}
 		server.handlePacket(packet, addr, raw)
@@ -94,6 +101,7 @@ func newServer(c PacketConn, h Handler, secret []byte) *server {
 		reqs:    make(map[requestID]*request),
 		conn:    c,
 		handler: h,
+		secret:  secret,
 	}
 }
 
@@ -107,6 +115,7 @@ func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
 			// notify the request handler
 			existing.control <- opDupe
 			s.mtx.RUnlock()
+			bufPool.Put(raw)
 			return
 		} else {
 			// if it's a new packet with the same ID,
@@ -150,6 +159,7 @@ const cleanupDelay = 5 * time.Second
 func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 	var resp []byte
 	var cleanupTimer *time.Timer
+	var timerCh <-chan time.Time
 	w := newResponseWriter()
 	handlerDone := make(chan struct{})
 
@@ -192,6 +202,7 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 				return
 			}
 		case resPacket := <-w.ch:
+			resPacket.Identifier = req.packet.Identifier
 			resp = bufPool.Get().([]byte)
 			resp = resPacket.Encode(resp[:0])
 			addResponseAuthenticator(resp, req.packet.Authenticator, s.secret)
@@ -201,12 +212,12 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 			// wait for a bit to make sure we catch any dupes,
 			// they will be treated as resend requests
 			cleanupTimer = time.NewTimer(cleanupDelay)
+			timerCh = cleanupTimer.C
 			w.ch = nil
-		case <-cleanupTimer.C:
+		case <-timerCh:
 			return
 		}
 	}
-
 }
 
 func responseAuthenticator(response, requestAuthenticator, secret, dest []byte) []byte {
