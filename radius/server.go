@@ -128,13 +128,15 @@ func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
 	}
 	s.mtx.RUnlock()
 
+	authed := false
 	if len(packet.Attributes) > 0 {
 		if auth := packet.Attributes[len(packet.Attributes)-1]; auth.Type == AttributeTypeMessageAuthenticator {
-			if !validMessageAuthenticator(raw[:int(packet.Length)], s.secret) {
-				// TODO: log this
-				return
-			}
+			authed = validMessageAuthenticator(raw[:int(packet.Length)], s.secret)
 		}
+	}
+	if !authed {
+		// TODO: log this
+		return
 	}
 
 	// process a new packet
