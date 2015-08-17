@@ -57,7 +57,11 @@ func Serve(c PacketConn, secret []byte, h Handler) error {
 		raw := bufPool.Get().([]byte)
 		n, addr, err := c.ReadFrom(raw)
 		if err != nil {
-			// TODO: check retryable
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				log.Printf("radius: got packet read error, retrying in 1s: %s", err)
+				time.Sleep(time.Second)
+				continue
+			}
 			return err
 		}
 
