@@ -45,10 +45,6 @@ type Request struct {
 	// Packet is the request packet, it must not be modified and will not be
 	// valid after the Handler has been returned from.
 	Packet *Packet
-
-	// ValidMessageAuthenticator is true if the request includes
-	// a Message-Authenticator and it is valid.
-	ValidMessageAuthenticator bool
 }
 
 var bufPool = &sync.Pool{
@@ -132,6 +128,15 @@ func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
 	}
 	s.mtx.RUnlock()
 
+	if len(packet.Attributes) > 0 {
+		if auth := packet.Attributes[len(packet.Attributes)-1]; auth.Type == AttributeTypeMessageAuthenticator {
+			if !validMessageAuthenticator(raw[:int(packet.Length)], s.secret) {
+				// TODO: log this
+				return
+			}
+		}
+	}
+
 	// process a new packet
 	req := &request{
 		addr:    addr,
@@ -170,15 +175,8 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 	w := newResponseWriter()
 	handlerDone := make(chan struct{})
 
-	hreq := &Request{Addr: req.addr, Packet: req.packet}
-	if len(req.packet.Attributes) > 0 {
-		if auth := req.packet.Attributes[len(req.packet.Attributes)-1]; auth.Type == AttributeTypeMessageAuthenticator {
-			hreq.ValidMessageAuthenticator = validMessageAuthenticator(rawReq[:int(req.packet.Length)], s.secret)
-		}
-	}
-
 	go func() {
-		s.handler.ServeRADIUS(w, hreq)
+		s.handler.ServeRADIUS(w, &Request{Addr: req.addr, Packet: req.packet})
 		close(handlerDone)
 	}()
 
