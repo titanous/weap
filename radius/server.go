@@ -1,6 +1,9 @@
+// Package radius implements RADIUS (RFC 2865) packet encoding/decoding as well
+// as a server framework.
 package radius
 
 import (
+	"crypto/hmac"
 	"crypto/md5"
 	"log"
 	"net"
@@ -42,6 +45,10 @@ type Request struct {
 	// Packet is the request packet, it must not be modified and will not be
 	// valid after the Handler has been returned from.
 	Packet *Packet
+
+	// ValidMessageAuthenticator is true if the request includes
+	// a Message-Authenticator and it is valid.
+	ValidMessageAuthenticator bool
 }
 
 var bufPool = &sync.Pool{
@@ -163,8 +170,15 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 	w := newResponseWriter()
 	handlerDone := make(chan struct{})
 
+	hreq := &Request{Addr: req.addr, Packet: req.packet}
+	if len(req.packet.Attributes) > 0 {
+		if auth := req.packet.Attributes[len(req.packet.Attributes)-1]; auth.Type == AttributeTypeMessageAuthenticator {
+			hreq.ValidMessageAuthenticator = validMessageAuthenticator(rawReq[:int(req.packet.Length)], s.secret)
+		}
+	}
+
 	go func() {
-		s.handler.ServeRADIUS(w, &Request{Addr: req.addr, Packet: req.packet})
+		s.handler.ServeRADIUS(w, hreq)
 		close(handlerDone)
 	}()
 
@@ -203,8 +217,13 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 			}
 		case resPacket := <-w.ch:
 			resPacket.Identifier = req.packet.Identifier
+			resPacket.Attributes = append(resPacket.Attributes, Attribute{
+				Type: AttributeTypeMessageAuthenticator,
+				Data: emptyAuthenticator,
+			})
 			resp = bufPool.Get().([]byte)
 			resp = resPacket.Encode(resp[:0])
+			addMessageAuthenticator(resp, req.packet.Authenticator, s.secret)
 			addResponseAuthenticator(resp, req.packet.Authenticator, s.secret)
 			_, err := s.conn.WriteTo(resp, req.addr)
 			w.err <- err
@@ -220,24 +239,33 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 	}
 }
 
-func responseAuthenticator(response, requestAuthenticator, secret, dest []byte) []byte {
-	h := md5.New()
-	h.Write(response[:4])
-	h.Write(requestAuthenticator)
-	if len(response) > 20 {
-		h.Write(response[20:])
-	}
-	h.Write(secret)
-	return h.Sum(dest)
-}
-
 // addResponseAuthenticator calculates a response authenticator and writes
 // it into an encoded packet.
 func addResponseAuthenticator(response, requestAuthenticator, secret []byte) {
-	responseAuthenticator(response, requestAuthenticator, secret, response[4:4])
+	h := md5.New()
+	h.Write(response[:4])
+	h.Write(requestAuthenticator)
+	h.Write(response[20:])
+	h.Write(secret)
+	h.Sum(response[4:4])
 }
 
-// CalculateAuthenticator calculates a response authenticator and returns it.
-func CalculateAuthenticator(response, requestAuthenticator, secret []byte) []byte {
-	return responseAuthenticator(response, requestAuthenticator, secret, nil)
+// addMessageAuthenticator calculates a response message authenticator and
+// writes it into an encoded packet. It assumes that the last attribute in the
+// packet is an all-zero Message-Authenticator.
+func addMessageAuthenticator(response, requestAuthenticator, secret []byte) {
+	h := hmac.New(md5.New, secret)
+	h.Write(response[:4])
+	h.Write(requestAuthenticator)
+	h.Write(response[20:])
+	startIdx := len(response) - 16
+	h.Sum(response[startIdx:startIdx])
+}
+
+func validMessageAuthenticator(request, secret []byte) bool {
+	h := hmac.New(md5.New, secret)
+	startIdx := len(request) - 16
+	h.Write(request[:startIdx])
+	h.Write(emptyAuthenticator)
+	return hmac.Equal(h.Sum(nil), request[startIdx:])
 }

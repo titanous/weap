@@ -18,6 +18,10 @@ const (
 
 type AttributeType byte
 
+const (
+	AttributeTypeMessageAuthenticator AttributeType = 80
+)
+
 type Packet struct {
 	Type          PacketType
 	Length        uint16
