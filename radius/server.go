@@ -60,6 +60,14 @@ func Serve(c PacketConn, secret []byte, h Handler) error {
 			// TODO: check retryable
 			return err
 		}
+
+		// verify the Message-Authenticator before parsing the packet
+		// 38 is the minimum length of a valid packet with a message authenticator
+		if n < 38 || !validMessageAuthenticator(raw[:n], secret) {
+			log.Printf("radius: error decoding packet from %s: missing or invalid Message-Authenticator", addr)
+			continue
+		}
+
 		packet, err := DecodePacket(raw[:n])
 		if err != nil {
 			log.Printf("radius: error decoding packet from %s: %s", addr, err)
@@ -69,6 +77,11 @@ func Serve(c PacketConn, secret []byte, h Handler) error {
 			log.Printf("radius: got invalid packet type from %s: %s", addr, packet.Type)
 			continue
 		}
+		if len(packet.Attributes) == 0 || packet.Attributes[len(packet.Attributes)-1].Type != AttributeTypeMessageAuthenticator {
+			log.Printf("radius: error processing packet from %s: apparently valid Message-Authenticator, but attributes are weird")
+			continue
+		}
+
 		server.handlePacket(packet, addr, raw)
 	}
 }
@@ -127,17 +140,6 @@ func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
 		}
 	}
 	s.mtx.RUnlock()
-
-	authed := false
-	if len(packet.Attributes) > 0 {
-		if auth := packet.Attributes[len(packet.Attributes)-1]; auth.Type == AttributeTypeMessageAuthenticator {
-			authed = validMessageAuthenticator(raw[:int(packet.Length)], s.secret)
-		}
-	}
-	if !authed {
-		// TODO: log this
-		return
-	}
 
 	// process a new packet
 	req := &request{
