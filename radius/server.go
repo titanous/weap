@@ -42,19 +42,18 @@ type Request struct {
 	// Addr is the address of the client that sent the request Packet.
 	Addr net.Addr
 
-	// Packet is the request packet, it must not be modified and will not be
-	// valid after the Handler has been returned from.
+	// Packet is the request packet.
 	Packet *Packet
 }
 
-var bufPool = &sync.Pool{
+var resBufPool = &sync.Pool{
 	New: func() interface{} { return make([]byte, packetMaxLength) },
 }
 
 func Serve(c PacketConn, secret []byte, h Handler) error {
 	server := newServer(c, h, secret)
 	for {
-		raw := bufPool.Get().([]byte)
+		raw := make([]byte, packetMaxLength)
 		n, addr, err := c.ReadFrom(raw)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
@@ -86,7 +85,7 @@ func Serve(c PacketConn, secret []byte, h Handler) error {
 			continue
 		}
 
-		server.handlePacket(packet, addr, raw)
+		server.handlePacket(packet, addr)
 	}
 }
 
@@ -125,7 +124,7 @@ func newServer(c PacketConn, h Handler, secret []byte) *server {
 	}
 }
 
-func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
+func (s *server) handlePacket(packet *Packet, addr net.Addr) {
 	reqID := requestID{addr.String(), packet.Identifier}
 
 	s.mtx.RLock()
@@ -135,7 +134,6 @@ func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
 			// notify the request handler
 			existing.control <- opDupe
 			s.mtx.RUnlock()
-			bufPool.Put(raw)
 			return
 		} else {
 			// if it's a new packet with the same ID,
@@ -154,7 +152,7 @@ func (s *server) handlePacket(packet *Packet, addr net.Addr, raw []byte) {
 	s.mtx.Lock()
 	s.reqs[reqID] = req
 	s.mtx.Unlock()
-	go s.handleRequest(reqID, req, raw)
+	go s.handleRequest(reqID, req)
 }
 
 func newResponseWriter() *responseWriter {
@@ -176,7 +174,7 @@ func (w *responseWriter) Write(p *Packet) error {
 
 const cleanupDelay = 5 * time.Second
 
-func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
+func (s *server) handleRequest(reqID requestID, req *request) {
 	var resp []byte
 	var cleanupTimer *time.Timer
 	var timerCh <-chan time.Time
@@ -201,9 +199,8 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 		// buffer to the pool.
 		<-handlerDone
 
-		bufPool.Put(rawReq)
 		if resp != nil {
-			bufPool.Put(resp)
+			resBufPool.Put(resp)
 		}
 	}()
 
@@ -227,7 +224,7 @@ func (s *server) handleRequest(reqID requestID, req *request, rawReq []byte) {
 				Type: AttributeTypeMessageAuthenticator,
 				Data: emptyAuthenticator,
 			})
-			resp = bufPool.Get().([]byte)
+			resp = resBufPool.Get().([]byte)
 			resp = resPacket.Encode(resp[:0])
 			addMessageAuthenticator(resp, req.packet.Authenticator, s.secret)
 			addResponseAuthenticator(resp, req.packet.Authenticator, s.secret)
