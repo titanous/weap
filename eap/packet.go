@@ -22,60 +22,49 @@ const (
 	TypeTLS      PacketType = 13
 )
 
-type TLSPacketFlag byte
-
-const (
-	FlagLength TLSPacketFlag = 1 << 7
-	FlagMore   TLSPacketFlag = 1 << 6
-	FlagStart  TLSPacketFlag = 1 << 5
-)
-
-type Packet struct {
+type PacketHeader struct {
 	Code       PacketCode
 	Type       PacketType
 	Identifier byte
-
-	Flags     TLSPacketFlag
-	TLSLength uint32
-	Data      []byte
 }
 
-func (p *Packet) Encode(buf []byte) []byte {
-	length := uint16(4 + len(p.Data))
-	if p.Code == CodeRequest || p.Code == CodeResponse {
-		length += 1
-	}
-	if p.Type == TypeTLS {
-		length += 1
-		if p.Flags&FlagLength != 0 {
-			length += 4
-		}
-	}
+func (h *PacketHeader) Encode(buf []byte, dataLen int) []byte {
+	length := uint16(h.EncodedLen() + dataLen)
 
-	buf = append(buf, byte(p.Code))
-	buf = append(buf, p.Identifier)
+	buf = append(buf, byte(h.Code))
+	buf = append(buf, h.Identifier)
 	buf = append(buf, byte(length>>8), byte(length))
-	if p.HasType() {
-		buf = append(buf, byte(p.Type))
+	if h.HasType() {
+		buf = append(buf, byte(h.Type))
 	}
-	if p.Type == TypeTLS {
-		buf = append(buf, byte(p.Flags))
-		if p.Flags&FlagLength != 0 {
-			buf = append(buf,
-				byte(p.TLSLength>>24),
-				byte(p.TLSLength>>16),
-				byte(p.TLSLength>>8),
-				byte(p.TLSLength),
-			)
-		}
-	}
-	buf = append(buf, p.Data...)
 
 	return buf
 }
 
-func (p *Packet) HasType() bool {
-	return p.Code == CodeRequest || p.Code == CodeResponse
+func (h *PacketHeader) EncodedLen() int {
+	l := 4 // code (1 byte) + identifier (1 byte) + length (2 bytes)
+	if h.HasType() {
+		l += 1 // type (1 byte)
+	}
+	return l
+}
+
+func (h *PacketHeader) HasType() bool {
+	return h.Code == CodeRequest || h.Code == CodeResponse
+}
+
+type Packet struct {
+	PacketHeader
+	Data []byte
+}
+
+func (p *Packet) Encode(buf []byte) []byte {
+	buf = p.PacketHeader.Encode(buf, len(p.Data))
+	return append(buf, p.Data...)
+}
+
+func (p *Packet) EncodedLen() int {
+	return p.PacketHeader.EncodedLen() + len(p.Data)
 }
 
 func DecodePacket(data []byte) (*Packet, error) {
@@ -83,7 +72,7 @@ func DecodePacket(data []byte) (*Packet, error) {
 		return nil, errors.New("eap: packet is too short")
 	}
 
-	var p Packet
+	p := &Packet{}
 	p.Code = PacketCode(data[0])
 
 	if p.Code != CodeRequest && p.Code != CodeResponse && p.Code != CodeSuccess && p.Code != CodeFailure {
@@ -106,26 +95,11 @@ func DecodePacket(data []byte) (*Packet, error) {
 		}
 		p.Type = PacketType(data[4])
 		data = data[5:int(length)]
-
-		if p.Type == TypeTLS {
-			if len(data) < 1 {
-				return nil, errors.New("eap: missing flags")
-			}
-			p.Flags = TLSPacketFlag(data[0])
-			data = data[1:]
-			if p.Flags&FlagLength != 0 {
-				if len(data) < 4 {
-					return nil, errors.New("eap: missing TLS length")
-				}
-				p.TLSLength = binary.BigEndian.Uint32(data)
-				data = data[4:]
-			}
-		}
 	} else {
 		data = data[4:int(length)]
 	}
 
 	p.Data = data
 
-	return &p, nil
+	return p, nil
 }
