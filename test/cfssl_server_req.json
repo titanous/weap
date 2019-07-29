@@ -1,0 +1,8 @@
+{
+    "hosts": ["ap.example.com"],
+    "key": {
+        "algo": "ecdsa",
+        "size": 256
+    },
+    "usages": ["server auth"]
+}
