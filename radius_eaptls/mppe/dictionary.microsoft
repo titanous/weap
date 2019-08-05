@@ -1,0 +1,12 @@
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# A subset of Microsoft's VSA's, from RFC 2548
+
+VENDOR		Microsoft			311
+
+BEGIN-VENDOR	Microsoft
+
+ATTRIBUTE	MS-MPPE-Send-Key			16	octets	encrypt=2
+ATTRIBUTE	MS-MPPE-Recv-Key			17	octets	encrypt=2
+
+END-VENDOR Microsoft

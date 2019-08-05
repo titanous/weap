@@ -6,6 +6,8 @@ import (
 	"fmt"
 )
 
+//go:generate stringer -type=PacketCode,PacketType -output gen_string.go
+
 type PacketCode byte
 
 const (
@@ -65,6 +67,16 @@ func (p *Packet) Encode(buf []byte) []byte {
 
 func (p *Packet) EncodedLen() int {
 	return p.PacketHeader.EncodedLen() + len(p.Data)
+}
+
+func (p *Packet) Response(code PacketCode) *Packet {
+	res := &Packet{}
+	res.Identifier = p.Identifier
+	res.Code = code
+	if code != CodeSuccess && code != CodeResponse {
+		res.Type = p.Type
+	}
+	return p
 }
 
 func DecodePacket(data []byte) (*Packet, error) {
