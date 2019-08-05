@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -94,43 +93,79 @@ func (c *conn) close() {
 	close(c.done)
 }
 
+type Logger interface {
+	Printf(string, ...interface{})
+}
+
+type nullLogger struct{}
+
+func (nullLogger) Printf(string, ...interface{}) {}
+
+type ServerConfig struct {
+	// MaxDataLen is the maximum length of the data section of an EAP-TLS packet without fragmentation. It defaults to 1000.
+	MaxDataLen int
+
+	// TLSConfig is the TLS server configuration, it must not be nil.
+	TLSConfig *tls.Config
+
+	// Logger a logger that will be used to log debug output.
+	Logger Logger
+}
+
+func NewServer(conf *ServerConfig) (*Server, error) {
+	if conf.TLSConfig == nil {
+		return nil, fmt.Errorf("eaptls: missing TLSConfig")
+	}
+	s := &Server{
+		maxDataLen: conf.MaxDataLen,
+		config:     conf.TLSConfig,
+		log:        conf.Logger,
+	}
+	if s.log == nil {
+		s.log = conf.Logger
+	}
+	if s.maxDataLen == 0 {
+		s.maxDataLen = 1000
+	}
+	return s, nil
+}
+
 type Server struct {
 	maxDataLen int // default to 1000
 	config     *tls.Config
 	mtx        sync.Mutex
 	conns      map[string]*conn
-	log        log.Logger
+	log        Logger
 }
 
 const maxMessageLength = 65536
 
+func (s *Server) ServeNewChallenge(req *Request, w ResponseWriter) {
+	state := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, state); err != nil {
+		panic(err)
+	}
+	w.SetState(state)
+	conn := &conn{
+		id:     string(state),
+		server: s,
+		done:   make(chan struct{}),
+	}
+
+	s.mtx.Lock()
+	s.conns[string(state)] = conn
+	s.mtx.Unlock()
+	go conn.gc()
+
+	s.log.Printf("initialized handshake username=%s mac=%s state=%x", req.ClientMAC, req.ClientUsername, state)
+	p := &Packet{}
+	p.Flags = FlagStart
+	w.Challenge(p)
+}
+
 func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 	log := func(msg string) {
 		s.log.Printf(msg+" username=%s mac=%s state=%x", req.ClientMAC, req.ClientUsername, req.State)
-	}
-	if len(req.State) == 0 {
-		state := make([]byte, 16)
-		if _, err := io.ReadFull(rand.Reader, state); err != nil {
-			panic(err)
-		}
-		req.State = state // for log()
-		w.SetState(state)
-		conn := &conn{
-			id:     string(state),
-			server: s,
-			done:   make(chan struct{}),
-		}
-
-		s.mtx.Lock()
-		s.conns[string(state)] = conn
-		s.mtx.Unlock()
-		go conn.gc()
-
-		log("new handshake")
-		p := &Packet{}
-		p.Flags = FlagStart
-		w.Challenge(p)
-		return
 	}
 	if len(req.State) != 16 {
 		log("invalid state value")
@@ -244,10 +279,12 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 			return
 		}
 		conn.success = &AuthInfo{
-			TLSInfo:    &state,
-			CommonName: state.VerifiedChains[0][0].Subject.CommonName,
-			RecvKey:    key[:32],
-			SendKey:    key[32:64],
+			TLSInfo: &state,
+			RecvKey: key[:32],
+			SendKey: key[32:64],
+		}
+		if len(state.VerifiedChains) > 0 {
+			conn.success.CommonName = state.VerifiedChains[0][0].Subject.CommonName
 		}
 		log(fmt.Sprintf("TLS handshake success cn=%s tls=%x cipher=%x", conn.success.CommonName, state.Version, state.CipherSuite))
 		if state.Version > tls.VersionTLS12 {
