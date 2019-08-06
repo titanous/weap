@@ -45,7 +45,6 @@ type conn struct {
 	handshakeResult chan error
 
 	success *AuthInfo
-	reject  bool
 }
 
 func (c *conn) nextDataPacket(first bool) *Packet {
@@ -198,13 +197,6 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 		return
 	}
 
-	if conn.reject {
-		log("handshake rejected due to TLS error, rejecting")
-		conn.close()
-		w.Reject()
-		return
-	}
-
 	if conn.success != nil {
 		log("handshake success, accepting")
 		conn.close()
@@ -262,8 +254,8 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 	case err := <-conn.handshakeResult:
 		if err != nil {
 			log(fmt.Sprintf("TLS handshake error err=%s", err))
-			conn.reject = true
-			// return the TLS alert
+			conn.close()
+			w.Reject()
 			break
 		}
 		state := conn.conn.ConnectionState()
@@ -276,6 +268,7 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 		}
 		if err != nil {
 			log(fmt.Sprintf("EKM error, rejecting err=%s", err))
+			conn.close()
 			w.Reject()
 			return
 		}
@@ -289,8 +282,8 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 		}
 		log(fmt.Sprintf("TLS handshake success cn=%s tls=%x cipher=%x", conn.success.CommonName, state.Version, state.CipherSuite))
 		if state.Version > tls.VersionTLS12 {
-			// send zero-byte application data frame to indicate completion (for TLS 1.3)
-			conn.conn.Write([]byte{})
+			// send application data frame to indicate completion (for TLS 1.3)
+			conn.conn.Write([]byte{0})
 		}
 	case <-conn.serverBuf.Available():
 		log("sending handshake data")
