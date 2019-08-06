@@ -36,9 +36,10 @@ func main() {
 	caPool.AppendCertsFromPEM(caData)
 
 	config := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    caPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		Certificates:           []tls.Certificate{cert},
+		ClientCAs:              caPool,
+		ClientAuth:             tls.RequireAndVerifyClientCert,
+		SessionTicketsDisabled: true,
 	}
 	tlsServer, err := eaptls.NewServer(&eaptls.ServerConfig{
 		TLSConfig: config,
