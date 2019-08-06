@@ -64,7 +64,7 @@ func (c *conn) nextDataPacket(first bool) *Packet {
 	return p
 }
 
-const connTimeout = 10 * time.Second
+const connTimeout = 60 * time.Second
 
 func (c *conn) gc() {
 	c.gcTimer = time.NewTimer(connTimeout)
@@ -119,6 +119,7 @@ func NewServer(conf *ServerConfig) (*Server, error) {
 	s := &Server{
 		maxDataLen: conf.MaxDataLen,
 		config:     conf.TLSConfig,
+		conns:      make(map[string]*conn),
 		log:        conf.Logger,
 	}
 	if s.log == nil {
@@ -157,7 +158,7 @@ func (s *Server) ServeNewChallenge(req *Request, w ResponseWriter) {
 	s.mtx.Unlock()
 	go conn.gc()
 
-	s.log.Printf("initialized handshake username=%s mac=%s state=%x", req.ClientMAC, req.ClientUsername, state)
+	s.log.Printf("initialized handshake username=%s mac=%s state=%x", req.ClientUsername, req.ClientMAC, state)
 	p := &Packet{}
 	p.Flags = FlagStart
 	w.Challenge(p)
@@ -235,7 +236,7 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 		return
 	} else {
 		log("received data")
-		_, _ = conn.clientBuf.Write(req.Data)
+		conn.clientBuf.Write(req.Data)
 	}
 
 	if conn.conn == nil {
@@ -251,7 +252,7 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 	}
 
 	if conn.clientBuf.Blocked() {
-		log("TLS handshake state is blocked on client read unexpectedly, rejecting")
+		panic("TLS handshake state is blocked on client read unexpectedly, rejecting")
 		conn.close()
 		w.Reject()
 		return
@@ -289,7 +290,7 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 		log(fmt.Sprintf("TLS handshake success cn=%s tls=%x cipher=%x", conn.success.CommonName, state.Version, state.CipherSuite))
 		if state.Version > tls.VersionTLS12 {
 			// send zero-byte application data frame to indicate completion (for TLS 1.3)
-			_, _ = conn.conn.Write([]byte{})
+			conn.conn.Write([]byte{})
 		}
 	case <-conn.serverBuf.Available():
 		log("sending handshake data")
@@ -302,6 +303,7 @@ func newBlockingReaderBuf() *blockingReaderBuf {
 	return &blockingReaderBuf{
 		cond:      sync.Cond{L: &sync.Mutex{}},
 		available: make(chan struct{}, 1),
+		unblocked: make(chan struct{}),
 	}
 }
 
@@ -311,6 +313,7 @@ type blockingReaderBuf struct {
 	closed    bool
 	blocked   bool
 	available chan struct{}
+	unblocked chan struct{}
 }
 
 func (b *blockingReaderBuf) Read(p []byte) (int, error) {
@@ -325,6 +328,7 @@ func (b *blockingReaderBuf) Read(p []byte) (int, error) {
 		b.blocked = true
 		b.cond.Wait()
 		b.blocked = false
+		defer func() { b.unblocked <- struct{}{} }()
 	}
 
 	if b.closed && b.buf.Len() == 0 {
@@ -345,14 +349,19 @@ func (b *blockingReaderBuf) WriteWithoutUnblock(p []byte) {
 
 func (b *blockingReaderBuf) write(p []byte, unblock bool) {
 	b.cond.L.Lock()
-	defer b.cond.L.Unlock()
 	b.buf.Write(p)
+	var blocked bool
 	if unblock {
 		select {
 		case b.available <- struct{}{}:
 		default:
 		}
+		blocked = b.blocked
 		b.cond.Broadcast()
+	}
+	b.cond.L.Unlock()
+	if blocked {
+		<-b.unblocked
 	}
 }
 

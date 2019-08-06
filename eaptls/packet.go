@@ -41,7 +41,7 @@ func (h *PacketHeader) EncodedLen() int {
 	if h.Flags&FlagLength != 0 {
 		l += 4 // (length 4 bytes)
 	}
-	return h.Outer.EncodedLen() + l
+	return l
 }
 
 type Packet struct {

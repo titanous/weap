@@ -72,11 +72,14 @@ func (p *Packet) EncodedLen() int {
 func (p *Packet) Response(code PacketCode) *Packet {
 	res := &Packet{}
 	res.Identifier = p.Identifier
+	if code == CodeRequest {
+		res.Identifier++
+	}
 	res.Code = code
-	if code != CodeSuccess && code != CodeResponse {
+	if res.HasType() {
 		res.Type = p.Type
 	}
-	return p
+	return res
 }
 
 func DecodePacket(data []byte) (*Packet, error) {

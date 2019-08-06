@@ -1,6 +1,9 @@
 package radius_eaptls
 
 import (
+	"crypto/hmac"
+	"crypto/md5"
+
 	"github.com/titanous/weap/eap"
 	"github.com/titanous/weap/eaptls"
 	"github.com/titanous/weap/radius_eaptls/mppe"
@@ -55,7 +58,7 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 		tlsReq: req,
 	}
 
-	if eapPacket.Code != eap.CodeRequest {
+	if eapPacket.Code != eap.CodeResponse {
 		h.log.Printf("unexpected EAP code %s from %s, expected CodeRequest", eapPacket.Code, r.RemoteAddr)
 		rw.Reject()
 		return
@@ -79,6 +82,15 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 	}
 }
 
+func addAuthenticator(p *radius.Packet) {
+	_ = rfc2869.MessageAuthenticator_Set(p, make([]byte, 16))
+	hash := hmac.New(md5.New, p.Secret)
+	b, _ := p.Encode()
+	copy(b[4:20], p.Authenticator[:]) // use the request Authenticator
+	hash.Write(b)
+	_ = rfc2869.MessageAuthenticator_Set(p, hash.Sum(nil))
+}
+
 type responseWriter struct {
 	r      *radius.Request
 	w      radius.ResponseWriter
@@ -92,8 +104,8 @@ func (w *responseWriter) SetState(state []byte) {
 }
 
 func (w *responseWriter) Challenge(pkt *eaptls.Packet) {
-	pkt.Outer.Identifier = w.eapReq.Identifier
-	pkt.Outer.Code = eap.CodeResponse
+	pkt.Outer.Identifier = w.eapReq.Identifier + 1
+	pkt.Outer.Code = eap.CodeRequest
 	pkt.Outer.Type = eap.TypeTLS
 	res := w.r.Response(radius.CodeAccessChallenge)
 	if len(w.tlsReq.State) > 0 && len(w.state) == 0 {
@@ -101,18 +113,20 @@ func (w *responseWriter) Challenge(pkt *eaptls.Packet) {
 	}
 	_ = rfc2865.State_Set(res, w.state)
 	_ = rfc2869.EAPMessage_Set(res, pkt.Encode(nil))
+	addAuthenticator(res)
 	_ = w.w.Write(res)
 }
 
 func (w *responseWriter) Accept(info *eaptls.AuthInfo) {
 	eapRes := w.eapReq.Response(eap.CodeSuccess)
 	res := w.r.Response(radius.CodeAccessAccept)
-	_ = rfc2869.EAPMessage_Set(res, eapRes.Encode(nil))
+	rfc2869.EAPMessage_Set(res, eapRes.Encode(nil))
 	_ = mppe.MSMPPESendKey_Set(res, info.SendKey)
 	_ = mppe.MSMPPERecvKey_Set(res, info.RecvKey)
 	if info.CommonName != "" {
 		_ = rfc2865.UserName_AddString(res, info.CommonName)
 	}
+	addAuthenticator(res)
 	_ = w.w.Write(res)
 }
 
@@ -120,5 +134,6 @@ func (w *responseWriter) Reject() {
 	eapRes := w.eapReq.Response(eap.CodeFailure)
 	res := w.r.Response(radius.CodeAccessReject)
 	_ = rfc2869.EAPMessage_Set(res, eapRes.Encode(nil))
+	addAuthenticator(res)
 	_ = w.w.Write(res)
 }

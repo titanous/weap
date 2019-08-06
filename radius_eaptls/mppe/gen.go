@@ -222,6 +222,7 @@ func MSMPPESendKey_Set(p *radius.Packet, value []byte) (err error) {
 	if err != nil {
 		return
 	}
+	salt[0] |= 0x80
 	a, err = radius.NewTunnelPassword(value, salt[:], p.Secret, p.Authenticator[:])
 	if err != nil {
 		return
@@ -344,6 +345,7 @@ func MSMPPERecvKey_Set(p *radius.Packet, value []byte) (err error) {
 	if err != nil {
 		return
 	}
+	salt[0] |= 0x80
 	a, err = radius.NewTunnelPassword(value, salt[:], p.Secret, p.Authenticator[:])
 	if err != nil {
 		return
