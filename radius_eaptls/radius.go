@@ -59,7 +59,7 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 	}
 
 	if eapPacket.Code != eap.CodeResponse {
-		h.log.Printf("unexpected EAP code %s from %s, expected CodeRequest", eapPacket.Code, r.RemoteAddr)
+		h.log.Printf("unexpected EAP code %s from %s, expected Response", eapPacket.Code, r.RemoteAddr)
 		rw.Reject()
 		return
 	}
