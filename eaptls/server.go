@@ -285,6 +285,13 @@ func (s *Server) ServeEAPTLS(req *Request, w ResponseWriter) {
 			// send application data frame to indicate completion (for TLS 1.3)
 			conn.conn.Write([]byte{0})
 		}
+		// the select we're in can result in sending the finished message before we get here
+		if conn.serverBuf.Len() == 0 {
+			log("handshake complete, accepting")
+			conn.close()
+			w.Accept(conn.success)
+			return
+		}
 	case <-conn.serverBuf.Available():
 		log("sending handshake data")
 	}
