@@ -3,6 +3,8 @@ package radius_eaptls
 import (
 	"crypto/hmac"
 	"crypto/md5"
+	"sync"
+	"time"
 
 	"github.com/titanous/weap/eap"
 	"github.com/titanous/weap/eaptls"
@@ -13,12 +15,67 @@ import (
 )
 
 func NewHandler(s *eaptls.Server, l eaptls.Logger) radius.Handler {
-	return &handler{s: s, log: l}
+	return &handler{
+		s:        s,
+		log:      l,
+		sessions: make(map[string]*session),
+	}
 }
 
 type handler struct {
 	s   *eaptls.Server
 	log eaptls.Logger
+
+	mtx      sync.Mutex
+	sessions map[string]*session
+}
+
+func (h *handler) addResponse(r *radius.Packet) {
+	state := rfc2865.State_Get(r)
+	if len(state) == 0 {
+		return
+	}
+	h.mtx.Lock()
+	sess, ok := h.sessions[string(state)]
+	if !ok {
+		sess = &session{
+			id:        string(state),
+			h:         h,
+			gcTimer:   time.NewTimer(sessionTimeout),
+			responses: make(map[byte]*radius.Packet),
+		}
+		h.sessions[sess.id] = sess
+		go sess.gc()
+	}
+	h.mtx.Unlock()
+
+	sess.touch()
+	sess.mtx.Lock()
+	sess.responses[r.Identifier] = r
+	sess.mtx.Unlock()
+}
+
+type session struct {
+	id        string
+	h         *handler
+	gcTimer   *time.Timer
+	mtx       sync.Mutex
+	responses map[byte]*radius.Packet
+}
+
+const sessionTimeout = 60 * time.Second
+
+func (s *session) gc() {
+	<-s.gcTimer.C
+	s.h.log.Printf("GCing session state=%x", s.id)
+	s.gcTimer.Stop()
+	s.h.mtx.Lock()
+	delete(s.h.sessions, s.id)
+	s.h.mtx.Unlock()
+}
+
+func (s *session) touch() {
+	s.gcTimer.Reset(sessionTimeout)
 }
 
 func reject(w radius.ResponseWriter, r *radius.Request) error {
@@ -37,6 +94,20 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 		State:          rfc2865.State_Get(r.Packet),
 	}
 
+	h.mtx.Lock()
+	sess, ok := h.sessions[string(req.State)]
+	h.mtx.Unlock()
+	if ok {
+		sess.mtx.Lock()
+		res, ok := sess.responses[r.Identifier]
+		sess.mtx.Unlock()
+		if ok {
+			w.Write(res)
+			h.log.Printf("returning cached response to duplicate request state=%x identifier=%d", r.Identifier, req.State)
+			return
+		}
+	}
+
 	eapData, err := rfc2869.EAPMessage_Lookup(r.Packet)
 	if err != nil {
 		h.log.Printf("error reading EAP data from %s", r.RemoteAddr)
@@ -52,6 +123,7 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 	}
 
 	rw := &responseWriter{
+		h:      h,
 		r:      r,
 		w:      w,
 		eapReq: eapPacket,
@@ -76,7 +148,7 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 		}
 		h.s.ServeEAPTLS(req, rw)
 	default:
-		h.log.Printf("unexepcted EAP packet type %s from %s", eapPacket.Type, r.RemoteAddr)
+		h.log.Printf("unexpected EAP packet type %s from %s", eapPacket.Type, r.RemoteAddr)
 		rw.Reject()
 		return
 	}
@@ -92,6 +164,7 @@ func addAuthenticator(p *radius.Packet) {
 }
 
 type responseWriter struct {
+	h      *handler
 	r      *radius.Request
 	w      radius.ResponseWriter
 	eapReq *eap.Packet
@@ -114,6 +187,7 @@ func (w *responseWriter) Challenge(pkt *eaptls.Packet) {
 	_ = rfc2865.State_Set(res, w.state)
 	_ = rfc2869.EAPMessage_Set(res, pkt.Encode(nil))
 	addAuthenticator(res)
+	w.h.addResponse(res)
 	_ = w.w.Write(res)
 }
 
@@ -127,6 +201,7 @@ func (w *responseWriter) Accept(info *eaptls.AuthInfo) {
 		_ = rfc2865.UserName_AddString(res, info.CommonName)
 	}
 	addAuthenticator(res)
+	w.h.addResponse(res)
 	_ = w.w.Write(res)
 }
 
@@ -135,5 +210,6 @@ func (w *responseWriter) Reject() {
 	res := w.r.Response(radius.CodeAccessReject)
 	_ = rfc2869.EAPMessage_Set(res, eapRes.Encode(nil))
 	addAuthenticator(res)
+	w.h.addResponse(res)
 	_ = w.w.Write(res)
 }
