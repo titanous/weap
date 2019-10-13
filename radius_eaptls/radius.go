@@ -155,6 +155,7 @@ func (h *handler) ServeRADIUS(w radius.ResponseWriter, r *radius.Request) {
 }
 
 func addAuthenticator(p *radius.Packet) {
+	_ = rfc2865.FramedMTU_Set(p, 1400)
 	_ = rfc2869.MessageAuthenticator_Set(p, make([]byte, 16))
 	hash := hmac.New(md5.New, p.Secret)
 	b, _ := p.Encode()
